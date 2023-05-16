@@ -39,9 +39,9 @@ def read_fastq_file(fastq_file):
 
     with open(fastq_file, encoding='UTF-8') as fastq:
         while quality:
-            _ = fastq.readline()
-            _ = fastq.readline()
-            _ = fastq.readline()
+            fastq.readline()
+            fastq.readline()
+            fastq.readline()
             quality = fastq.readline().rstrip()
 
             if quality:

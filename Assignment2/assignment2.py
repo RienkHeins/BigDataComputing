@@ -78,7 +78,9 @@ def runserver(fn, data, sizes, output):
     time.sleep(5)
     print("Aaaaaand we're done for the server!")
     manager.shutdown()
+    # calculate average phredscores from results
     average_phredscores = calculate_average_phredscores(results, sizes)
+    # create output
     for file, scores in average_phredscores:
         if len(average_phredscores) > 1:
             if output is None:
@@ -89,7 +91,6 @@ def runserver(fn, data, sizes, output):
         else:
             csvfile = output
         create_output(scores, csvfile)
-
 
 
 def make_client_manager(ip, port, authkey):
@@ -161,9 +162,16 @@ def create_file_object(file, chunks_count):
     :param chunks_count: Amount of chunks to split the file into
     :return: List object with chunks, file name and file size
     """
-    quality_lines = subprocess.check_output(['wc', '-l', file])
+    # get the size of the file without opening it
+    process = subprocess.Popen(['wc', '-l', file], stdout=subprocess.PIPE,
+                                              stderr=subprocess.PIPE)
+    quality_lines, err = process.communicate()
+    if process.returncode != 0:
+        raise IOError(err)
+    # get the amount of quality lines
     quality_lines = int(quality_lines.split()[0]) / 4
     chunks = []
+    # get the start and end positions of the file chunks in the file
     for i in range(chunks_count):
         start = round(i * quality_lines / chunks_count)
         end = round((i + 1) * quality_lines / chunks_count)
@@ -179,30 +187,33 @@ def read_fastq_chunk(chunk_object):
     start and end point to process from this file
     :return: Dictionary that links scores to its file
     """
+    # get the file name, chunk starting position and ending position
     fastq_file = chunk_object[0]
     start = chunk_object[1]
     end = chunk_object[2]
     count = 0
+    # create result dictionary
     result = {}
-
     with open(fastq_file, encoding='UTF-8') as fastq:
+        # skip lines until starting point is reached
         while count < start:
             fastq.readline()
             fastq.readline()
             fastq.readline()
             fastq.readline()
             count += 1
+        # calculate scores until the end point has been reached
         while count < end:
             fastq.readline()
             fastq.readline()
             fastq.readline()
             quality = fastq.readline().rstrip()
             count += 1
-
+            # check if quality line contains characters
             if not quality:
                 # we reached the end of the file
                 break
-
+            # append results to dictionary
             for j, c in enumerate(quality):
                 try:
                     result[fastq_file][j] += ord(c) - 33
@@ -210,7 +221,6 @@ def read_fastq_chunk(chunk_object):
                     result[fastq_file] = [ord(c) - 33]
                 except IndexError:
                     result[fastq_file].append(ord(c) - 33)
-
     return result
 
 
@@ -225,24 +235,27 @@ def calculate_average_phredscores(results, num_reads):
     :return: Dictionary containing the average phredscores as values
     with the corresponding files as keys
     """
+    # create storage and result dictionaries
     phredscores = {}
     average_phredscores = {}
+    # loop through results
     for result in results:
         for file, scores in result.items():
             for i, score in enumerate(scores):
+                # add scores to the corresponding files
                 try:
                     phredscores[file][i] += score
                 except KeyError:
                     phredscores[file] = [score]
                 except IndexError:
                     phredscores[file].append(score)
+    # loop through results and calculate averages
     for file, scores in phredscores.items():
         for score in scores:
             try:
                 average_phredscores[file].append(score / num_reads[file])
             except KeyError:
                 average_phredscores[file] = [score / num_reads[file]]
-
     return average_phredscores
 
 
@@ -253,12 +266,14 @@ def create_output(average_phredscores, csvfile):
     the fastq files
     :param csvfile: csv output file name
     """
+    # check if a filename is given
     if csvfile is None:
+        # write results
         csv_writer = csv.writer(sys.stdout, delimiter=',')
         for i, score in enumerate(average_phredscores):
             csv_writer.writerow([i, score])
-
     else:
+        # write results
         with open(csvfile, 'w', encoding='UTF-8', newline='') as myfastq:
             csv_writer = csv.writer(myfastq, delimiter=',')
             for i, score in enumerate(average_phredscores):
@@ -266,6 +281,7 @@ def create_output(average_phredscores, csvfile):
 
 
 def main():
+    # create argparser
     argparser = ap.ArgumentParser(
         description="Script voor Opdracht 2 van Big Data Computing;  Calculate PHRED scores over the network.")
     mode = argparser.add_mutually_exclusive_group(required=True)
@@ -275,7 +291,7 @@ def main():
     server_args.add_argument("-o", action="store", dest="csvfile", type=ap.FileType('w', encoding='UTF-8'),
                              required=False,
                              help="CSV file om de output in op te slaan. Default is output naar terminal STDOUT")
-    server_args.add_argument("fastq_files", action="store", type=ap.FileType('r'), nargs='*',
+    server_args.add_argument("fastq_files", action="store", nargs='*',
                              help="Minstens 1 Illumina Fastq Format file om te verwerken")
     server_args.add_argument("--chunks", action="store", type=int, required=True)
 
@@ -287,29 +303,35 @@ def main():
     client_args.add_argument("--port", action="store", type=int, help="The port on which the Server is listening")
 
     args = argparser.parse_args()
-
+    # check if server argument is given
     if args.s:
-        if args.host:
+        # check if host is specified
+        if args.host is not None:
             IP = args.host
-        if args.port:
+        # check if port is specified
+        if args.port is not None:
             PORTNUM = args.port
-        if len(args.fastq_files) == 0:
-            sys.exit("No input files received")
+        # create lists and dictionary for storage
         file_objects = []
         jobs = []
         sizes = {}
+        # loop through files
         for file in args.fastq_files:
             file_objects.append(create_file_object(file, args.chunks))
+        # create jobs
         for obj in file_objects:
             for job in obj[0]:
                 jobs.append(job)
+            # get file sizes
             sizes[obj[1]] = obj[2]
+        # run server
         server = mp.Process(target=runserver, args=(read_fastq_chunk, jobs, sizes, args.csvfile))
         server.start()
         time.sleep(1)
         server.join()
-
+    # check if client argument is given
     elif args.c:
+        # run client
         IP = args.host
         PORTNUM = args.port
         client = mp.Process(target=runclient, args=(args.n,))
